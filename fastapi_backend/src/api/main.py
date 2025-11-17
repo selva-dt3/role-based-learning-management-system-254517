@@ -19,6 +19,9 @@ openapi_tags = [
     {"name": "Files", "description": "Upload files to Supabase Storage"},
 ]
 
+# Initialize settings early so we can configure middleware at app construction time
+_settings = get_settings()
+
 app = FastAPI(
     title="LMS Backend API",
     description="FastAPI backend for Role-Based LMS using Supabase for data and storage.",
@@ -26,23 +29,27 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
-# Configure CORS from env on startup to avoid failing at module import if env is missing
+# Add CORS middleware at app construction time (cannot add after startup)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_settings.cors_allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.on_event("startup")
 def on_startup():
-    """Log startup status and configure CORS from environment."""
-    settings = get_settings()
-    # Attach CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_allow_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    """Log startup status (CORS middleware already configured at import time)."""
+    settings = _settings
     # Log binding hint (bind is controlled by uvicorn cmd; we log the intended port)
     missing = getattr(settings, "missing_supabase_vars", lambda: [])()
     if missing:
-        logger.warning("API starting on 0.0.0.0:%s with missing Supabase env: %s", settings.api_port, ", ".join(missing))
+        logger.warning(
+            "API starting on 0.0.0.0:%s with missing Supabase env: %s",
+            settings.api_port,
+            ", ".join(missing),
+        )
     else:
         logger.info("API starting on 0.0.0.0:%s with Supabase configured", settings.api_port)
 
