@@ -27,10 +27,10 @@ Create role-based-learning-management-system-254517/fastapi_backend/.env (copy f
 - Optional: SUPABASE_ANON_KEY for client operations if needed later
 
 Local Development Quick Start
-1) Create and populate .env (see .env.example included in this folder)
+1) Copy .env.example to .env and populate values (the API will still start even if SUPABASE_* are missing; DB endpoints will return 500 until configured).
 2) Ensure bucket lms-files exists (see Storage section)
 3) Install dependencies: pip install -r requirements.txt
-4) Run the FastAPI app: uvicorn src.api.main:app --host 0.0.0.0 --port 3001
+4) Run the FastAPI app (binds to 0.0.0.0:3001): uvicorn src.api.main:app --host 0.0.0.0 --port 3001
 5) Generate OpenAPI file (optional for interfaces dir): python -m src.api.generate_openapi
 
 Available APIs (summary)
@@ -65,6 +65,8 @@ Troubleshooting
   - Confirm bucket exists and is public (or adjust code to use signed URLs).
 - CORS issues:
   - Ensure CORS_ALLOW_ORIGINS includes your frontend URL(s), e.g., http://localhost:3000.
+- Startup issues:
+  - If the app fails to access Supabase, it will now log a warning and still start; DB endpoints will return HTTP 500 with a clear error about missing configuration or missing package.
 
 Security Notes
 - Replace permissive development policies with least-privilege RLS policies for production.

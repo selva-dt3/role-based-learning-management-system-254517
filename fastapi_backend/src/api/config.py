@@ -1,3 +1,4 @@
+import logging
 import os
 from functools import lru_cache
 
@@ -5,6 +6,8 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env if present
 load_dotenv()
+
+logger = logging.getLogger("lms.config")
 
 
 class Settings:
@@ -26,21 +29,28 @@ class Settings:
         # API port
         self.api_port = int(os.getenv("API_PORT") or "3001")
 
-        # Basic validation with actionable messages
+    def supabase_configured(self) -> bool:
+        """Return True if required Supabase env variables are present."""
+        return bool(self.supabase_url and self.supabase_service_role_key)
+
+    def missing_supabase_vars(self) -> list[str]:
+        """List missing required Supabase env vars."""
         missing = []
         if not self.supabase_url:
             missing.append("SUPABASE_URL")
         if not self.supabase_service_role_key:
             missing.append("SUPABASE_SERVICE_ROLE_KEY")
-        if missing:
-            raise ValueError(
-                "Missing required environment variables: "
-                + ", ".join(missing)
-                + ". Create fastapi_backend/.env from .env.example and set these values."
-            )
+        return missing
 
 
 @lru_cache()
 def get_settings():
     """Return cached settings instance."""
-    return Settings()
+    settings = Settings()
+    if not settings.supabase_configured():
+        logger.warning(
+            "Supabase not fully configured. Missing: %s. "
+            "The API will start but DB/storage operations will return 500 until configured.",
+            ", ".join(settings.missing_supabase_vars()) or "none",
+        )
+    return settings

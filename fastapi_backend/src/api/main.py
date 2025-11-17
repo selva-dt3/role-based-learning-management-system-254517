@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,6 +8,8 @@ from .routers_lessons import router as lessons_router
 from .routers_quizzes import router as quizzes_router
 from .routers_assignments import router as assignments_router
 from .routers_upload import router as upload_router
+
+logger = logging.getLogger("lms.app")
 
 openapi_tags = [
     {"name": "Health", "description": "Service health and metadata"},
@@ -22,15 +26,25 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
-# Configure CORS from env
-settings = get_settings()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_allow_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Configure CORS from env on startup to avoid failing at module import if env is missing
+@app.on_event("startup")
+def on_startup():
+    """Log startup status and configure CORS from environment."""
+    settings = get_settings()
+    # Attach CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    # Log binding hint (bind is controlled by uvicorn cmd; we log the intended port)
+    missing = getattr(settings, "missing_supabase_vars", lambda: [])()
+    if missing:
+        logger.warning("API starting on 0.0.0.0:%s with missing Supabase env: %s", settings.api_port, ", ".join(missing))
+    else:
+        logger.info("API starting on 0.0.0.0:%s with Supabase configured", settings.api_port)
 
 
 # PUBLIC_INTERFACE
