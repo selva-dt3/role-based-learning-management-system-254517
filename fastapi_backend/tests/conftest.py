@@ -95,7 +95,16 @@ class FakeSupabaseTable:
         # order
         if "order_by" in self._chain:
             col, desc = self._chain["order_by"]
-            rows = sorted(rows, key=lambda r: r.get(col), reverse=desc)
+            # If all values are None or the column is missing, skip ordering to avoid TypeError
+            try:
+                values = [r.get(col) for r in rows]
+                if not values or all(v is None for v in values):
+                    return rows
+                # Safe key: places None values after non-None for asc, before for desc when reversed appropriately
+                rows = sorted(rows, key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
+            except Exception:
+                # As a defensive fallback, do not sort if comparison fails
+                return rows
         return rows
 
     def _ensure_id(self, row: Dict[str, Any], table: List[Dict[str, Any]]):
