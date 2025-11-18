@@ -33,6 +33,11 @@ Local Development Quick Start
 4) Run the FastAPI app (binds to 0.0.0.0:3001): uvicorn src.api.main:app --host 0.0.0.0 --port 3001
 5) Generate OpenAPI file (optional for interfaces dir): python -m src.api.generate_openapi
 
+Running Tests (pytest + coverage)
+- From fastapi_backend/, run:
+    pytest --maxfail=1 --disable-warnings --cov=src.api --cov-report=term-missing
+- Tests mock Supabase client; no real Supabase credentials are required.
+
 Available APIs (summary)
 - Lessons:
   - GET /lessons
