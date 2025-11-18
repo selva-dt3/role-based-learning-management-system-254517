@@ -20,36 +20,58 @@ from src.api.main import app as fastapi_app
 
 
 class FakeSupabaseTable:
-    """In-memory stub for Supabase table operations used in routers."""
+    """In-memory stub for Supabase table operations used in routers.
+
+    Supports chaining semantics similar to supabase-py:
+    - insert(...).select(...).single().execute()
+    - update(...).eq(...).select(...).single().execute()
+    - upsert(..., on_conflict="...").select(...).single().execute()
+    - select(...).eq(...).order(...).execute()
+    """
 
     def __init__(self, storage: Dict[str, List[Dict[str, Any]]], name: str):
         self._storage = storage
         self._name = name
         self._chain: Dict[str, Any] = {}
 
+    def _reset_if_new_chain(self):
+        # If previous chain was executed, new call should reset state.
+        # In our simple fake, we allow reusing the same instance between chains by reinitializing when needed.
+        pass  # no-op; pytest creates fresh instances via client.table(...)
+
     # Chainable methods to simulate supabase-py API
     def insert(self, payload: Dict[str, Any]):
+        self._reset_if_new_chain()
         self._chain["op"] = "insert"
         self._chain["payload"] = payload
         return self
 
     def upsert(self, payload: Dict[str, Any], on_conflict: Optional[str] = None):
+        self._reset_if_new_chain()
         self._chain["op"] = "upsert"
         self._chain["payload"] = payload
         self._chain["on_conflict"] = on_conflict
         return self
 
     def update(self, payload: Dict[str, Any]):
+        self._reset_if_new_chain()
         self._chain["op"] = "update"
         self._chain["payload"] = payload
         return self
 
     def delete(self):
+        self._reset_if_new_chain()
         self._chain["op"] = "delete"
         return self
 
     def select(self, fields: str):
-        self._chain["op"] = "select"
+        # Do not override previously stored op; record that a select should be returned after mutation.
+        # If there is no op yet, treat as a normal SELECT.
+        if "op" not in self._chain or self._chain.get("op") in (None, "select"):
+            self._chain["op"] = "select"
+        else:
+            # Remember that a select was requested after a mutation (insert/update/upsert)
+            self._chain["select_after"] = True
         self._chain["fields"] = fields
         return self
 
@@ -76,60 +98,80 @@ class FakeSupabaseTable:
             rows = sorted(rows, key=lambda r: r.get(col), reverse=desc)
         return rows
 
+    def _ensure_id(self, row: Dict[str, Any], table: List[Dict[str, Any]]):
+        if "id" not in row:
+            row["id"] = f"{self._name}_id_{len(table)+1}"
+
     def execute(self):
         op = self._chain.get("op")
         table = self._storage.setdefault(self._name, [])
+
+        # Helper to wrap return with single() semantics if requested
+        def _wrap_data(rows_or_row):
+            if self._chain.get("single"):
+                if isinstance(rows_or_row, list):
+                    return rows_or_row[0] if rows_or_row else None
+                return rows_or_row
+            return rows_or_row
+
         if op == "insert":
             payload = dict(self._chain.get("payload") or {})
-            # ensure id exists
-            if "id" not in payload:
-                payload["id"] = f"{self._name}_id_{len(table)+1}"
+            self._ensure_id(payload, table)
             table.append(payload)
-            data = payload
-            return types.SimpleNamespace(data=data)
+            if self._chain.get("select_after"):
+                # Return inserted row(s) when select() was chained
+                return types.SimpleNamespace(data=_wrap_data(payload))
+            # Minimal success payload when no select chained (emulates supabase default)
+            return types.SimpleNamespace(data=None)
+
         if op == "upsert":
             payload = dict(self._chain.get("payload") or {})
-            key_fields = []
+            key_fields: List[str] = []
             on_conflict = self._chain.get("on_conflict")
             if on_conflict:
-                key_fields = [k.strip() for k in str(on_conflict).split(",")]
+                key_fields = [k.strip() for k in str(on_conflict).split(",") if k.strip()]
             # find match
             idx = None
-            for i, row in enumerate(table):
-                if key_fields and all(row.get(k) == payload.get(k) for k in key_fields):
-                    idx = i
-                    break
+            if key_fields:
+                for i, row in enumerate(table):
+                    if all(row.get(k) == payload.get(k) for k in key_fields):
+                        idx = i
+                        break
             if idx is None:
-                if "id" not in payload:
-                    payload["id"] = f"{self._name}_id_{len(table)+1}"
+                self._ensure_id(payload, table)
                 table.append(payload)
-                data = payload
+                affected = payload
             else:
                 table[idx].update({k: v for k, v in payload.items() if v is not None})
-                data = table[idx]
-            return types.SimpleNamespace(data=data)
+                affected = table[idx]
+            if self._chain.get("select_after"):
+                return types.SimpleNamespace(data=_wrap_data(affected))
+            return types.SimpleNamespace(data=None)
+
         if op == "update":
             payload = dict(self._chain.get("payload") or {})
             rows = self._apply_filters(table)
             if not rows:
-                return types.SimpleNamespace(data=None)
-            # Update the first matched row to simulate .single()
-            row = rows[0]
-            row.update(payload)
-            return types.SimpleNamespace(data=row)
+                # No rows matched
+                return types.SimpleNamespace(data=_wrap_data(None if self._chain.get("single") else []))
+            # Update all matched rows (Supabase would normally update all; .single() narrows return)
+            for r in rows:
+                r.update(payload)
+            if self._chain.get("select_after"):
+                return types.SimpleNamespace(data=_wrap_data(rows))
+            # No select chained: minimal payload
+            return types.SimpleNamespace(data=None)
+
         if op == "delete":
             rows = self._apply_filters(table)
-            # remove matched
             to_remove_ids = set(id(row) for row in rows)
             self._storage[self._name] = [r for r in table if id(r) not in to_remove_ids]
             return types.SimpleNamespace(data=None)
+
         if op == "select":
             rows = self._apply_filters(table)
-            # if single requested, return first
-            if self._chain.get("single"):
-                data = rows[0] if rows else None
-                return types.SimpleNamespace(data=data)
-            return types.SimpleNamespace(data=rows)
+            return types.SimpleNamespace(data=_wrap_data(rows))
+
         # default
         return types.SimpleNamespace(data=None)
 
