@@ -1,7 +1,16 @@
+import os
+import sys
 import types
 from typing import Any, Dict, List, Optional
+
 import pytest
 from fastapi.testclient import TestClient
+
+# Ensure the tests can import "src" using the project root of fastapi_backend
+# When running `pytest` from fastapi_backend, this is already fine; this is a safeguard.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Import the app from the backend entrypoint used by uvicorn and OpenAPI generator
 from src.api.main import app as fastapi_app
@@ -164,12 +173,22 @@ class FakeSupabaseClient:
 def app_client(monkeypatch):
     """
     Provide a TestClient with Supabase client mocked out across routers.
+
+    This fixture:
+    - Builds a FakeSupabaseClient as in-memory store.
+    - Patches src.api.supabase_client.get_supabase_client to return the fake.
+    - Critically, also patches the locally imported get_supabase_client symbol inside:
+        * src.api.routers_lessons
+        * src.api.routers_quizzes
+        * src.api.routers_assignments
+      to ensure the routers use the fake client without needing Supabase env vars.
+    - Ensures deterministic storage bucket name for upload tests.
     """
     # In-memory DB across a test case
     backing_store: Dict[str, List[Dict[str, Any]]] = {}
     fake_client = FakeSupabaseClient(backing_store)
 
-    # Monkeypatch src.api.supabase_client.get_supabase_client to return fake
+    # Monkeypatch module-level factory
     import src.api.supabase_client as sb_module
 
     def fake_get_client():
@@ -177,11 +196,21 @@ def app_client(monkeypatch):
 
     monkeypatch.setattr(sb_module, "get_supabase_client", fake_get_client, raising=True)
 
+    # Import each router module and patch their locally imported get_supabase_client
+    import src.api.routers_lessons as r_lessons
+    import src.api.routers_quizzes as r_quizzes
+    import src.api.routers_assignments as r_assignments
+
+    monkeypatch.setattr(r_lessons, "get_supabase_client", fake_get_client, raising=True)
+    monkeypatch.setattr(r_quizzes, "get_supabase_client", fake_get_client, raising=True)
+    monkeypatch.setattr(r_assignments, "get_supabase_client", fake_get_client, raising=True)
+
     # Also patch settings to avoid .env dependence for storage bucket
     from src.api import config as cfg_module
     settings = cfg_module.get_settings()
     # ensure bucket name deterministic for tests
     settings.supabase_storage_bucket = "test-bucket"
 
+    # Create test client after monkeypatching
     client = TestClient(fastapi_app)
     return client
